@@ -59,6 +59,57 @@ C = {
 APP_TITLE   = "PyInstaller GUI"
 
 
+def _get_python_exe() -> str:
+    """
+    Devuelve la ruta al intérprete Python real.
+    Cuando corremos como .exe frozen, sys.executable apunta al .exe,
+    no a python.exe — hay que buscarlo en el PATH del sistema.
+    """
+    if not getattr(sys, "frozen", False):
+        return sys.executable  # En desarrollo, sys.executable es python.exe
+
+    # En .exe frozen: buscar python.exe en el PATH
+    import shutil
+    for candidate in ("python", "python3", "python.exe", "python3.exe"):
+        found = shutil.which(candidate)
+        if found and "pyinstaller_gui" not in found.lower():
+            return found
+
+    # Fallback: buscar en rutas comunes de Windows
+    import winreg
+    try:
+        for key_path in (
+            r"SOFTWARE\Python\PythonCore",
+            r"SOFTWARE\WOW6432Node\Python\PythonCore",
+        ):
+            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, key_path) as key:
+                versions = []
+                i = 0
+                while True:
+                    try:
+                        versions.append(winreg.EnumKey(key, i))
+                        i += 1
+                    except OSError:
+                        break
+                for ver in sorted(versions, reverse=True):
+                    try:
+                        with winreg.OpenKey(key, ver + r"\InstallPath") as ikey:
+                            install_path = winreg.QueryValue(ikey, None)
+                            python_exe = Path(install_path) / "python.exe"
+                            if python_exe.exists():
+                                return str(python_exe)
+                    except OSError:
+                        continue
+    except Exception:
+        pass
+
+    raise RuntimeError(
+        "No se encontró Python en el sistema.\n\n"
+        "Asegúrate de que Python esté instalado y en el PATH.\n"
+        "Descárgalo en: https://www.python.org/downloads/"
+    )
+
+
 def _get_resource_path(filename: str) -> Path:
     """
     Devuelve la ruta correcta a un recurso tanto en desarrollo como en .exe.
@@ -117,12 +168,20 @@ class BuildConfig:
         if self.strip:     args.append("--strip")
         if not self.upx:   args.append("--noupx")
         args += ["--name", self.name.strip() or Path(self.script_path).stem]
-        # Si hay carpeta de salida explícita, usarla
-        # Si no, usar dist/ junto al script a compilar (no junto a pyinstaller_gui)
-        if self.output_dir.strip():
+        # Todos los artefactos van junto al script a compilar, no junto al .exe
+        if self.script_path.strip():
+            script_dir = str(Path(self.script_path).parent)
+            # dist/ — ejecutable final
+            if self.output_dir.strip():
+                args += ["--distpath", self.output_dir.strip()]
+            else:
+                args += ["--distpath", str(Path(self.script_path).parent / "dist")]
+            # build/ — archivos temporales de compilación
+            args += ["--workpath", str(Path(self.script_path).parent / "build")]
+            # .spec — archivo de especificación de PyInstaller
+            args += ["--specpath", script_dir]
+        elif self.output_dir.strip():
             args += ["--distpath", self.output_dir.strip()]
-        elif self.script_path.strip():
-            args += ["--distpath", str(Path(self.script_path).parent / "dist")]
         if self.icon_path.strip():
             ico = self.icon_path.strip().replace("/", "\\")
             args += ["--icon", ico]
@@ -983,17 +1042,42 @@ class App(ctk.CTk):
             messagebox.showerror("Ícono no encontrado",
                                   f"No existe:\n{cfg.icon_path}"); return
 
-        try:
-            subprocess.run([sys.executable, "-m", "PyInstaller", "--version"],
-                           capture_output=True, check=True)
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            if not messagebox.askyesno(
-                "PyInstaller no instalado",
-                "PyInstaller no está instalado.\n\n¿Instalarlo ahora con pip?"
-            ): return
-            self._install_then_build(cfg); return
+        # Deshabilitar botón inmediatamente para feedback visual
+        self.btn_build.configure(state="disabled")
+        self.var_status.set("⏳ Verificando entorno Python...")
+        self.log_view.append("⏳ Buscando Python y verificando PyInstaller...", "DIM")
+        self.update_idletasks()
 
-        self._launch_build(cfg)
+        # Hacer la verificación en un hilo para no bloquear la UI
+        def _check_and_build():
+            try:
+                python_exe = _get_python_exe()
+            except RuntimeError as e:
+                self.after(0, lambda: self._on_check_failed(str(e)))
+                return
+
+            try:
+                subprocess.run([python_exe, "-m", "PyInstaller", "--version"],
+                               capture_output=True, check=True,
+                               creationflags=SUBPROCESS_FLAGS)
+                self.after(0, lambda: self._launch_build(cfg))
+            except (subprocess.CalledProcessError, FileNotFoundError):
+                self.after(0, lambda: self._ask_install_pyinstaller(cfg))
+
+        threading.Thread(target=_check_and_build, daemon=True).start()
+
+    def _on_check_failed(self, msg: str):
+        self.btn_build.configure(state="normal")
+        self.var_status.set("✗ Error")
+        messagebox.showerror("Python no encontrado", msg)
+
+    def _ask_install_pyinstaller(self, cfg: BuildConfig):
+        self.btn_build.configure(state="normal")
+        if not messagebox.askyesno(
+            "PyInstaller no instalado",
+            "PyInstaller no está instalado.\n\n¿Instalarlo ahora con pip?"
+        ): return
+        self._install_then_build(cfg)
 
     def _install_then_build(self, cfg: BuildConfig):
         self.log_view.clear()
@@ -1006,7 +1090,7 @@ class App(ctk.CTk):
         def worker():
             try:
                 proc = subprocess.Popen(
-                    [sys.executable, "-m", "pip", "install", "pyinstaller"],
+                    [_get_python_exe(), "-m", "pip", "install", "pyinstaller"],
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, encoding="utf-8", errors="replace",
                     creationflags=SUBPROCESS_FLAGS)
@@ -1045,7 +1129,7 @@ class App(ctk.CTk):
         def worker():
             try:
                 proc = subprocess.Popen(
-                    [sys.executable, "-m", "PyInstaller"] + args,
+                    [_get_python_exe(), "-m", "PyInstaller"] + args,
                     stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                     text=True, encoding="utf-8", errors="replace",
                     creationflags=SUBPROCESS_FLAGS)
