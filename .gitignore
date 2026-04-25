@@ -1,0 +1,13 @@
+# PyInstaller folders
+build/
+dist/
+
+# Python caching
+__pycache__/
+*.pyc
+
+# PyInstaller Spec files (optional, but often ignored if using the GUI)
+*.spec
+
+# Local configuration
+pyinstaller_gui_config.json
