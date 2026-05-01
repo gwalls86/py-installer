@@ -8,7 +8,7 @@ Una interfaz gráfica moderna, elegante y potente para convertir tus scripts de 
 
 ---
 
-## 📸 Captura de Pantalla
+## 🎨 Icono del Proyecto
 
 <p align="center">
   <img src="icon.png" width="200" alt="PyInstaller GUI Icon">
@@ -95,3 +95,7 @@ pip install customtkinter pyinstaller pillow
 ## ⚖️ Licencia
 
 Este proyecto está bajo la Licencia MIT. Siéntete libre de usarlo para tus proyectos personales o comerciales.
+
+---
+*Desarrollado por gwalls86*
+
