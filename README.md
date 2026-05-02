@@ -97,5 +97,5 @@ pip install customtkinter pyinstaller pillow
 Este proyecto está bajo la Licencia MIT. Siéntete libre de usarlo para tus proyectos personales o comerciales.
 
 ---
-*Desarrollado por gwalls86*
+*Desarrollado por **gwalls86***
 
