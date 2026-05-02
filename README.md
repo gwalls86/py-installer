@@ -1,4 +1,4 @@
-# 🚀 PyInstaller GUI — CustomTkinter Edition
+# 🚀 PyInstaller GUI
 
 Una interfaz gráfica moderna, elegante y potente para convertir tus scripts de Python (`.py`) en ejecutables independientes (`.exe`) de forma sencilla, utilizando **PyInstaller** y **CustomTkinter**.
 

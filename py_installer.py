@@ -447,6 +447,108 @@ class LogView(ctk.CTkFrame):
         self.text.configure(state="disabled")
 
 
+# ─── MENSAJES DE ERROR ────────────────────────────────────────────────────────
+
+_PERMISSION_ERROR_MSG = (
+    "Error de permisos al eliminar la carpeta build.\n\n"
+    "Ruta bloqueada:\n"
+    "  {path}\n\n"
+    "Causa más probable:\n"
+    "  Un proceso externo tiene bloqueado uno o más archivos en la carpeta\n"
+    "  build (sincronizador de nube, antivirus, o una instancia anterior\n"
+    "  del ejecutable aún en ejecución).\n\n"
+    "Soluciones:\n"
+    "  1. Si usas Google Drive, OneDrive o Dropbox: pausa la sincronización\n"
+    "     y vuelve a compilar.\n"
+    "  2. Cierra cualquier instancia del ejecutable anterior que esté corriendo.\n"
+    "  3. Desactiva temporalmente el antivirus en tiempo real y reintenta.\n"
+    "  4. Borra manualmente la carpeta 'build' junto al script y reintenta.\n"
+    "  5. Ejecuta la aplicación como Administrador."
+)
+
+
+# ─── DIÁLOGO ERROR DE PERMISOS ───────────────────────────────────────────────
+
+class PermissionErrorDialog(ctk.CTkToplevel):
+    """
+    Diálogo modal para PermissionError WinError 5.
+    Ofrece tres acciones: Forzar borrado + reintentar, Solo reintentar, Cerrar.
+    result: "force" | "retry" | "close"
+    """
+    def __init__(self, parent, message: str, build_path: str):
+        super().__init__(parent)
+        self.result     = "close"
+        self.build_path = build_path
+
+        self.title("Error de permisos")
+        self.resizable(False, False)
+        self.configure(fg_color=C["bg"])
+        self.grab_set()  # modal
+
+        # ── Ícono + título ──
+        hdr = ctk.CTkFrame(self, fg_color="transparent")
+        hdr.pack(fill="x", padx=20, pady=(20, 0))
+        ctk.CTkLabel(hdr, text="⛔", font=ctk.CTkFont("Segoe UI", 28),
+                     text_color=C["error"]).pack(side="left", padx=(0, 10))
+        ctk.CTkLabel(hdr, text="Error de permisos al limpiar build",
+                     font=ctk.CTkFont("Segoe UI", 13, "bold"),
+                     text_color=C["error"]).pack(side="left")
+
+        # ── Mensaje ──
+        ctk.CTkTextbox(self, width=520, height=230,
+                       fg_color=C["bg_input"], text_color=C["fg"],
+                       font=ctk.CTkFont("Consolas", 11),
+                       wrap="word", state="normal").pack(padx=20, pady=12)
+        # Insertar texto (necesitamos la referencia)
+        self._tb = self.winfo_children()[-1]
+        self._tb.insert("0.0", message)
+        self._tb.configure(state="disabled")
+
+        # ── Botones ──
+        btn_frame = ctk.CTkFrame(self, fg_color="transparent")
+        btn_frame.pack(fill="x", padx=20, pady=(0, 20))
+
+        ctk.CTkButton(btn_frame,
+                      text="🗑 Forzar borrado y reintentar",
+                      fg_color=C["error"], hover_color="#c0566e",
+                      text_color="#ffffff",
+                      font=ctk.CTkFont("Segoe UI", 12, "bold"),
+                      command=self._force).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(btn_frame,
+                      text="↺ Solo reintentar",
+                      fg_color=C["bg_hover"],
+                      text_color=C["fg"],
+                      font=ctk.CTkFont("Segoe UI", 12),
+                      command=self._retry).pack(side="left", padx=(0, 8))
+
+        ctk.CTkButton(btn_frame,
+                      text="Cerrar",
+                      fg_color=C["bg_card"],
+                      text_color=C["fg_dim"],
+                      font=ctk.CTkFont("Segoe UI", 12),
+                      command=self._close).pack(side="right")
+
+        # Centrar sobre la ventana padre
+        self.update_idletasks()
+        px = parent.winfo_x() + (parent.winfo_width()  - self.winfo_width())  // 2
+        py = parent.winfo_y() + (parent.winfo_height() - self.winfo_height()) // 2
+        self.geometry(f"+{px}+{py}")
+        self.wait_window()
+
+    def _force(self):
+        self.result = "force"
+        self.destroy()
+
+    def _retry(self):
+        self.result = "retry"
+        self.destroy()
+
+    def _close(self):
+        self.result = "close"
+        self.destroy()
+
+
 # ─── APP PRINCIPAL ────────────────────────────────────────────────────────────
 
 class App(ctk.CTk):
@@ -1134,6 +1236,8 @@ class App(ctk.CTk):
                     text=True, encoding="utf-8", errors="replace",
                     creationflags=SUBPROCESS_FLAGS)
                 br.cancel.proc = proc
+                permission_error_detected = False
+                permission_error_path     = ""
                 for line in proc.stdout:
                     line = line.rstrip()
                     if not line: continue
@@ -1144,13 +1248,25 @@ class App(ctk.CTk):
                                             ("info:", "building", "copying")) else
                            "INFO")
                     br.log(line, lvl)
+                    # Detectar PermissionError WinError 5 en el output de PyInstaller
+                    if "permissionerror" in lo and ("winerror 5" in lo or "access is denied" in lo):
+                        permission_error_detected = True
+                        # Intentar extraer la ruta del mensaje
+                        import re
+                        m = re.search(r"'([^']+)'$", line)
+                        if m:
+                            permission_error_path = m.group(1)
                 proc.wait()
                 if br.cancel.is_set():
                     br.done(False, "Cancelado.")
                 elif proc.returncode == 0:
                     br.done(True, "Compilación exitosa.")
                 else:
-                    br.done(False, f"PyInstaller terminó con código {proc.returncode}.")
+                    if permission_error_detected:
+                        br.done(False, _PERMISSION_ERROR_MSG.format(
+                            path=permission_error_path or "(carpeta build)"))
+                    else:
+                        br.done(False, f"PyInstaller terminó con código {proc.returncode}.")
             except Exception as e:
                 br.log(traceback.format_exc(), "ERROR")
                 br.done(False, str(e))
@@ -1221,6 +1337,68 @@ class App(ctk.CTk):
             self.log_view.append("═" * 55, "DIM")
             self.log_view.append(f"  ✗ {summary}", "ERROR")
             self.log_view.append("═" * 55, "DIM")
+            # Mostrar diálogo especial si el error es de permisos
+            is_permission = (
+                "error de permisos" in summary.lower()
+                or "access is denied" in summary.lower()
+                or "winerror 5" in summary.lower()
+            )
+            if is_permission:
+                # Extraer ruta build del summary para pasarla al diálogo
+                import re as _re
+                m = _re.search(r"Ruta bloqueada:\\n  (.+?)\\n", summary)
+                blocked = m.group(1).strip() if m else ""
+                # Subir hasta la raíz de build/ (dos niveles desde localpycs)
+                build_root = ""
+                if blocked:
+                    from pathlib import Path as _Path
+                    p = _Path(blocked)
+                    # Buscar "build" en los ancestros
+                    for part in p.parents:
+                        if part.name == "build":
+                            build_root = str(part)
+                            break
+                    if not build_root:
+                        build_root = str(_Path(self.cfg.script_path).parent / "build")
+                else:
+                    build_root = str(Path(self.cfg.script_path).parent / "build")
+                dlg = PermissionErrorDialog(self, summary, build_root)
+                if dlg.result in ("force", "retry"):
+                    if dlg.result == "force":
+                        self._force_delete_build(build_root)
+                    self._launch_build(self.cfg)
+
+    def _force_delete_build(self, build_root: str):
+        """
+        Intenta borrar la carpeta build forzadamente.
+        Primero intenta shutil.rmtree; si falla por permisos, usa
+        'rd /s /q' (Windows) como último recurso.
+        """
+        import shutil
+        p = Path(build_root)
+        if not p.exists():
+            self.log_view.append(f"ℹ Carpeta build no encontrada: {build_root}", "INFO")
+            return
+        self.log_view.append(f"🗑 Forzando borrado de: {build_root}", "WARNING")
+        try:
+            shutil.rmtree(str(p), ignore_errors=False)
+            self.log_view.append("✓ Carpeta build eliminada.", "SUCCESS")
+        except Exception as e:
+            self.log_view.append(f"  shutil.rmtree falló: {e}", "WARNING")
+            self.log_view.append("  Intentando con 'rd /s /q'...", "WARNING")
+            try:
+                result = subprocess.run(
+                    ["cmd", "/c", "rd", "/s", "/q", str(p)],
+                    capture_output=True, text=True,
+                    creationflags=SUBPROCESS_FLAGS)
+                if result.returncode == 0:
+                    self.log_view.append("✓ Carpeta build eliminada (cmd).", "SUCCESS")
+                else:
+                    self.log_view.append(
+                        f"  rd /s /q falló (código {result.returncode}): "
+                        f"{result.stderr.strip()}", "ERROR")
+            except Exception as e2:
+                self.log_view.append(f"  Error al ejecutar rd: {e2}", "ERROR")
 
     def _on_close(self):
         if self.worker and self.worker.is_alive():
